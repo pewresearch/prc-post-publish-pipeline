@@ -231,14 +231,14 @@ class Bootstrap {
 			case 'prc_newsletter':
 				$label = 'Newsletter';
 				break;
+			case 'prc_email_campaign':
+				$label = 'Newsletter';
+				break;
 			case 'press-release':
 				$label = 'Press Release';
 				break;
 			case 'decoded':
 				$label = 'Decoded';
-				break;
-			case 'engineering':
-				$label = 'Engineering';
 				break;
 			case 'collections':
 				$label = 'Collection';
