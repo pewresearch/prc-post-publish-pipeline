@@ -1,5 +1,5 @@
 
-> @prc/post-publish-pipeline@3.1.1 build
+> @prc/post-publish-pipeline@3.1.0 build
 > wp-scripts build src/index.js
 
 asset index.js 1.52 KiB [compared for emit] [minimized] (name: index)
@@ -7,4 +7,4 @@ asset index.asset.php 105 bytes [compared for emit] (name: index)
 Entrypoint index 1.62 KiB = index.js 1.52 KiB index.asset.php 105 bytes
 orphan modules 84 bytes [orphan] 2 modules
 ./src/index.js + 2 modules 2.7 KiB [not cacheable] [built] [code generated]
-webpack 5.106.2 compiled successfully in 1148 ms
+webpack 5.106.2 compiled successfully in 1125 ms
