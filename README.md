@@ -10,6 +10,8 @@ The pipeline normalizes the chaotic WordPress post status transition hooks into 
 
 ## Available hooks
 
+### Sync tier (runs during the save request)
+
 | Hook | Fires when |
 |------|-----------|
 | `prc_platform_on_post_init` | A new post is first created |
@@ -21,9 +23,34 @@ The pipeline normalizes the chaotic WordPress post status transition hooks into 
 | `prc_platform_on_untrash` | A post is restored from trash |
 | `prc_platform_on_status_transition` | Catch-all: fired on every observed status change. Args: `($post, $current, $prior, $has_blocks)` |
 
-Most hooks pass `WP_Post` as the first argument; `prc_platform_on_status_transition` also passes the new status, prior status, and a `has_blocks` boolean.
+Use the **sync tier** for post mutations, cache invalidation, and anything the editor or frontend must see immediately after save.
 
-Per-post-type variants exist for everything: `prc_platform_on_{post_type}_publish`, `prc_platform_on_{post_type}_status_transition`, etc.
+### Async tier (deferred via Action Scheduler)
+
+For each terminal lifecycle event above, the pipeline enqueues one Action Scheduler job (`prc_platform_post_publish_pipeline_async_dispatch`, group `prc-post-publish-pipeline`) that fires parallel async hooks with a freshly loaded post:
+
+| Hook | Fires when |
+|------|-----------|
+| `prc_platform_async_on_publish` | Async follow-up to a publish transition |
+| `prc_platform_async_on_update` | Async follow-up to a published-post update |
+| `prc_platform_async_on_unpublish` | Async follow-up to an unpublish transition |
+| `prc_platform_async_on_untrash` | Async follow-up to an untrash transition |
+| `prc_platform_async_on_trash` | Async follow-up to a trash transition |
+| `prc_platform_async_on_incremental_save` | Async follow-up to an incremental save (`draft`/`publish` ↔ `draft`/`publish`) |
+
+Use the **async tier** for notifications, external API calls, and other deferrable side effects. `prior_status` is not available on async hooks.
+
+The pipeline does **not** auto-enqueue `incremental_save`. Consumers enqueue it from sync `prc_platform_on_incremental_save` when work should be deferred.
+
+Per-post-type variants exist for both tiers: `prc_platform_on_{post_type}_publish`, `prc_platform_async_on_{post_type}_publish`, etc.
+
+Other plugins can enqueue async tier events directly:
+
+```php
+\PRC\Platform\Post_Publish_Pipeline\enqueue_async_event( $post_id, 'publish' );
+```
+
+Supported events: `publish`, `update`, `unpublish`, `untrash`, `trash`, `incremental_save`.
 
 ## JS pipeline actions
 
@@ -71,6 +98,7 @@ Other platform components can attach additional data to the WP post object via t
 |------|-----------|-------------|
 | `enqueue_block_editor_assets` | Action | Enqueues JS pipeline integration |
 | `prc_platform_post_publish_pipeline_post_types` | Filter | Extend tracked post types |
+| `prc_platform_post_publish_pipeline_should_process` | Filter | Return `false` to skip all sync-tier `prc_platform_on_*` hooks and async-tier enqueue for a write (e.g. bulk relationship sync). Args: `$should_process`, `$post_id`, `$post_obj_now`, `$is_update`, `$post_obj_before` |
 | `prc_platform_wp_post_object` | Filter | Extend the WP post object shape |
 
 ## Notes

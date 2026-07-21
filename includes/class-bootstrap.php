@@ -19,6 +19,8 @@ use WP_Term;
  * @uses prc_platform_on_post_init
  * @uses prc_platform_on_incremental_save
  * @uses prc_platform_on_publish
+ * @uses prc_platform_async_on_publish
+ * @uses prc_platform_async_on_incremental_save
  * @uses prc_platform_on_update
  * @uses prc_platform_on_unpublish
  * @uses prc_platform_on_trash
@@ -27,6 +29,48 @@ use WP_Term;
  * @package    PRC\Platform\Post_Publish_Pipeline
  */
 class Bootstrap {
+	/**
+	 * Action Scheduler hook for the async tier dispatch job.
+	 *
+	 * @var string
+	 */
+	public const ASYNC_DISPATCH_HOOK = 'prc_platform_post_publish_pipeline_async_dispatch';
+
+	/**
+	 * Action Scheduler group for async tier jobs.
+	 *
+	 * @var string
+	 */
+	public const ASYNC_GROUP = 'prc-post-publish-pipeline';
+
+	/**
+	 * Lifecycle events supported by the async tier.
+	 *
+	 * @var string[]
+	 */
+	private const ASYNC_EVENTS = array(
+		'publish',
+		'update',
+		'unpublish',
+		'untrash',
+		'trash',
+		'incremental_save',
+	);
+
+	/**
+	 * Editor user ID captured when the async job was enqueued.
+	 *
+	 * @var int
+	 */
+	private static $async_editor_id = 0;
+
+	/**
+	 * Bootstrap singleton used by the public enqueue helper.
+	 *
+	 * @var self|null
+	 */
+	private static $instance = null;
+
 	/**
 	 * The loader that's responsible for maintaining and registering all hooks that power
 	 * the plugin.
@@ -102,6 +146,7 @@ class Bootstrap {
 	 * @since    1.0.0
 	 */
 	public function __construct() {
+		self::$instance    = $this;
 		$this->version     = defined( 'PRC_POST_PUBLISH_PIPELINE_VERSION' ) ? PRC_POST_PUBLISH_PIPELINE_VERSION : '1.0.0';
 		$this->plugin_name = 'prc-post-publish-pipeline';
 
@@ -146,6 +191,104 @@ class Bootstrap {
 		$this->loader->add_action( 'rest_api_init', $this, 'register_rest_fields' );
 		$this->loader->add_filter( 'rest_post_query', $this, 'add_post_parent_request_to_rest_api', 10, 2 );
 		$this->loader->add_action( 'wp_after_insert_post', $this, 'process_post_publish_pipeline', 10, 4 );
+		$this->loader->add_action( self::ASYNC_DISPATCH_HOOK, $this, 'dispatch_async_event', 10, 3 );
+	}
+
+	/**
+	 * Enqueue an async tier lifecycle event for a post.
+	 *
+	 * @param int    $post_id Post ID.
+	 * @param string $event   Lifecycle event slug.
+	 */
+	public static function enqueue_async_event( int $post_id, string $event ): void {
+		if ( $post_id <= 0 || ! in_array( $event, self::ASYNC_EVENTS, true ) ) {
+			return;
+		}
+
+		$post_type = get_post_type( $post_id );
+		if ( ! $post_type ) {
+			return;
+		}
+
+		$args = array(
+			'post_id'   => $post_id,
+			'event'     => $event,
+			'editor_id' => (int) get_current_user_id(),
+		);
+
+		if ( function_exists( 'as_enqueue_async_action' ) ) {
+			as_enqueue_async_action(
+				self::ASYNC_DISPATCH_HOOK,
+				$args,
+				self::ASYNC_GROUP,
+				true
+			);
+			return;
+		}
+
+		if ( self::$instance instanceof self ) {
+			self::$instance->dispatch_async_event( $post_id, $event, (int) get_current_user_id() );
+		}
+	}
+
+	/**
+	 * Editor user ID captured when the current async dispatch job was enqueued.
+	 *
+	 * @return int
+	 */
+	public static function get_async_editor_id(): int {
+		return self::$async_editor_id;
+	}
+
+	/**
+	 * Run async tier hooks for a queued lifecycle event.
+	 *
+	 * @param int    $post_id   Post ID.
+	 * @param string $event     Lifecycle event slug.
+	 * @param int    $editor_id User ID captured at enqueue time.
+	 */
+	public function dispatch_async_event( $post_id, $event, $editor_id = 0 ): void {
+		$post_id   = (int) $post_id;
+		$event     = (string) $event;
+		$editor_id = (int) $editor_id;
+
+		if ( $post_id <= 0 || ! in_array( $event, self::ASYNC_EVENTS, true ) ) {
+			return;
+		}
+
+		$post = get_post( $post_id );
+		if ( ! $post instanceof WP_Post ) {
+			return;
+		}
+
+		if ( ! in_array( $post->post_type, $this->get_allowed_post_types(), true ) ) {
+			return;
+		}
+
+		// Drop stale jobs when the post's current status no longer matches the queued event.
+		if ( 'incremental_save' === $event ) {
+			if ( ! in_array( $post->post_status, array( 'draft', 'publish' ), true ) ) {
+				return;
+			}
+		} elseif ( in_array( $event, array( 'publish', 'update', 'untrash' ), true ) && 'publish' !== $post->post_status ) {
+			return;
+		} elseif ( in_array( $event, array( 'unpublish', 'trash' ), true ) && 'publish' === $post->post_status ) {
+			return;
+		}
+
+		$ref_post = $this->setup_extra_wp_post_object_fields( $post );
+		if ( is_wp_error( $ref_post ) ) {
+			return;
+		}
+
+		$has_blocks           = has_blocks( $post );
+		$post_type            = $post->post_type;
+		self::$async_editor_id = $editor_id;
+
+		do_action( "prc_platform_async_on_{$event}", $ref_post, $has_blocks );
+		do_action( "prc_platform_async_on_{$post_type}_{$event}", $ref_post, $has_blocks );
+
+		self::$async_editor_id = 0;
 	}
 
 	/**
@@ -224,9 +367,6 @@ class Bootstrap {
 				break;
 			case 'dataset':
 				$label = 'Dataset';
-				break;
-			case 'newsletterglue':
-				$label = 'Newsletter';
 				break;
 			case 'prc_newsletter':
 				$label = 'Newsletter';
@@ -341,10 +481,7 @@ class Bootstrap {
 	 * @hook rest_api_init
 	 */
 	public function register_rest_fields() {
-		$allowed_post_types = array_merge(
-			$this->get_allowed_post_types(),
-			array( 'newsletterglue' )
-		);
+		$allowed_post_types = $this->get_allowed_post_types();
 		// Add label to object.
 		register_rest_field(
 			$allowed_post_types,
@@ -492,6 +629,29 @@ class Bootstrap {
 			return;
 		}
 
+		/**
+		 * Filter whether the post publish pipeline should process this insert/update.
+		 *
+		 * Return false to skip all `prc_platform_on_*` lifecycle hooks for this write
+		 * (e.g. while syncing report-package chapter status/date/terms from a parent).
+		 *
+		 * @param bool     $should_process  Whether to process. Default true.
+		 * @param int      $post_id         Post ID.
+		 * @param \WP_Post $post_obj_now    Post object after the write.
+		 * @param bool     $is_update       Whether this is an update.
+		 * @param \WP_Post $post_obj_before Post object before the write.
+		 */
+		if ( ! apply_filters(
+			'prc_platform_post_publish_pipeline_should_process',
+			true,
+			$post_id,
+			$post_obj_now,
+			$is_update,
+			$post_obj_before
+		) ) {
+			return;
+		}
+
 		$prior_status   = is_object( $post_obj_before ) && property_exists( $post_obj_before, 'post_status' ) ? $post_obj_before->post_status : null;
 		$current_status = $post_obj_now->post_status;
 
@@ -532,28 +692,34 @@ class Bootstrap {
 			switch ( $current_status ) {
 				case 'publish':
 					if ( in_array( $prior_status, array( 'draft', 'future' ), true ) ) {
-						do_action( 'prc_platform_on_publish', $ref_post, has_blocks( $post_obj_now ) );
-						do_action( "prc_platform_on_{$post_obj_now->post_type}_publish", $ref_post, has_blocks( $post_obj_now ) );
+						do_action( 'prc_platform_on_publish', $ref_post, $has_blocks );
+						do_action( "prc_platform_on_{$post_type}_publish", $ref_post, $has_blocks );
+						self::enqueue_async_event( $post_id, 'publish' );
 					} elseif ( 'trash' === $prior_status ) {
-						do_action( 'prc_platform_on_untrash', $ref_post, has_blocks( $post_obj_now ) );
-						do_action( "prc_platform_on_{$post_obj_now->post_type}_untrash", $ref_post, has_blocks( $post_obj_now ) );
+						do_action( 'prc_platform_on_untrash', $ref_post, $has_blocks );
+						do_action( "prc_platform_on_{$post_type}_untrash", $ref_post, $has_blocks );
+						self::enqueue_async_event( $post_id, 'untrash' );
 					} else {
-						do_action( 'prc_platform_on_update', $ref_post, has_blocks( $post_obj_now ) );
-						do_action( "prc_platform_on_{$post_obj_now->post_type}_update", $ref_post, has_blocks( $post_obj_now ) );
+						do_action( 'prc_platform_on_update', $ref_post, $has_blocks );
+						do_action( "prc_platform_on_{$post_type}_update", $ref_post, $has_blocks );
+						self::enqueue_async_event( $post_id, 'update' );
 					}
 					break;
 				case 'draft':
 					if ( 'publish' === $prior_status ) {
-						do_action( 'prc_platform_on_unpublish', $ref_post, has_blocks( $post_obj_now ) );
-						do_action( "prc_platform_on_{$post_obj_now->post_type}_unpublish", $ref_post, has_blocks( $post_obj_now ) );
+						do_action( 'prc_platform_on_unpublish', $ref_post, $has_blocks );
+						do_action( "prc_platform_on_{$post_type}_unpublish", $ref_post, $has_blocks );
+						self::enqueue_async_event( $post_id, 'unpublish' );
 					} elseif ( 'trash' === $prior_status ) {
-						do_action( 'prc_platform_on_untrash', $ref_post, has_blocks( $post_obj_now ) );
-						do_action( "prc_platform_on_{$post_obj_now->post_type}_untrash", $ref_post, has_blocks( $post_obj_now ) );
+						do_action( 'prc_platform_on_untrash', $ref_post, $has_blocks );
+						do_action( "prc_platform_on_{$post_type}_untrash", $ref_post, $has_blocks );
+						self::enqueue_async_event( $post_id, 'untrash' );
 					}
 					break;
 				case 'trash':
-					do_action( 'prc_platform_on_trash', $ref_post, has_blocks( $post_obj_now ) );
-					do_action( "prc_platform_on_{$post_obj_now->post_type}_trash", $ref_post, has_blocks( $post_obj_now ) );
+					do_action( 'prc_platform_on_trash', $ref_post, $has_blocks );
+					do_action( "prc_platform_on_{$post_type}_trash", $ref_post, $has_blocks );
+					self::enqueue_async_event( $post_id, 'trash' );
 					break;
 			}
 		}
