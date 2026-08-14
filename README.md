@@ -1,5 +1,7 @@
 # PRC Post Publish Pipeline
 
+> Canonical docs: [docs/plugins/prc-post-publish-pipeline/](../../docs/plugins/prc-post-publish-pipeline/)
+
 Standalone PRC Platform plugin that provides standardized, lifecycle-aware WordPress hooks for tracking posts through creation, saving, publishing, updating, unpublishing, and trashing.
 
 Consumed by many `prc-*` plugins; declared as a `Requires Plugins` dependency by every plugin that hooks into the pipeline. Force-loaded on VIP via `client-mu-plugins/plugin-loader.php` immediately after `prc-platform-core`.
