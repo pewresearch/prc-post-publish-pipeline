@@ -411,7 +411,10 @@ class Bootstrap {
 			$label = ucwords( str_replace( '-', ' ', $term_name ) );
 		}
 
-		$label = $this->label_fallbacks( $post_type ) ?? $label;
+		$fallback = $this->label_fallbacks( $post_type );
+		if ( is_string( $fallback ) && '' !== $fallback ) {
+			$label = $fallback;
+		}
 
 		return $label;
 	}
@@ -488,6 +491,11 @@ class Bootstrap {
 			'label',
 			array(
 				'get_callback' => array( $this, 'restfully_get_label' ),
+				'schema'       => array(
+					'description' => 'Content format label for this post.',
+					'type'        => 'string',
+					'context'     => array( 'view', 'edit', 'embed' ),
+				),
 			)
 		);
 
